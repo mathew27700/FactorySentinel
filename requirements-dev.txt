@@ -1,0 +1,7 @@
+ruff==0.17.2
+pytest==9.1.1
+pre-commit==4.7.0
+kafka-python==3.0.11
+pyyaml==6.0.3
+# Must match the apache/spark image tag in docker-compose.yml.
+pyspark==4.2.0
