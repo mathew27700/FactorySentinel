@@ -6,3 +6,5 @@ pyyaml==6.0.3
 # Must match the apache/spark image tag in docker-compose.yml.
 pyspark==4.2.0
 pandas==3.1.1
+kaggle==2.2.5
+six==1.17.0
