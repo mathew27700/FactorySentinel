@@ -1,12 +1,14 @@
 """FactorySentinel stream job.
 
-Step A2: Kafka (sensor.raw) -> typed columns -> console.
-Later steps add Postgres, validation, alerts and the lake.
+Step A3: Kafka (sensor.raw) -> typed columns -> Postgres live_readings (idempotent upsert).
+Later steps add validation, alerts, windows and the lake.
 Everything it needs to know about names and rules is in docs/contract.md.
 """
 
 import os
 
+import psycopg2
+from psycopg2.extras import execute_values
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
@@ -74,6 +76,68 @@ def parse(df):
 # [/read]
 
 
+# [postgres]
+
+
+def pg_connect():
+    return psycopg2.connect(
+        host=os.environ.get("POSTGRES_HOST", "postgres"),
+        port=os.environ.get("POSTGRES_PORT", "5432"),
+        dbname=os.environ["POSTGRES_DB"],
+        user=os.environ["POSTGRES_USER"],
+        password=os.environ["POSTGRES_PASSWORD"],
+        sslmode=os.environ.get("POSTGRES_SSLMODE", "prefer"),
+    )
+
+
+def upsert(sql, rows):
+    """Run one INSERT ... ON CONFLICT for all rows, in a single transaction."""
+    if not rows:
+        return
+    conn = pg_connect()
+    try:
+        with conn, conn.cursor() as cur:  # commits on success, rolls back on any error
+            execute_values(cur, sql, rows)
+    finally:
+        conn.close()
+
+
+SQL_READINGS = """
+    INSERT INTO live_readings
+        (machine_id, event_time, event_id, ingest_time, source, volt, rotate, pressure, vibration)
+    VALUES %s
+    ON CONFLICT (machine_id, event_time) DO UPDATE SET
+        event_id = EXCLUDED.event_id, ingest_time = EXCLUDED.ingest_time, source = EXCLUDED.source,
+        volt = EXCLUDED.volt, rotate = EXCLUDED.rotate,
+        pressure = EXCLUDED.pressure, vibration = EXCLUDED.vibration, stored_at = now()"""
+
+
+def write_readings(valid):
+    rows = (
+        valid.dropDuplicates(["machine_id", "event_time"])  # same reading twice in one batch
+        .select(
+            "machine_id",
+            F.date_format("event_ts", ISO),
+            "event_id",
+            F.date_format("ingest_ts", ISO),
+            "source",
+            "volt",
+            "rotate",
+            "pressure",
+            "vibration",
+        )
+        .collect()
+    )
+    upsert(SQL_READINGS, [tuple(r) for r in rows])
+
+
+# [/postgres]
+
+
+def process_batch(batch, batch_id):
+    write_readings(parse(batch))
+
+
 if __name__ == "__main__":
     spark = (
         SparkSession.builder.appName("factorysentinel")
@@ -83,11 +147,10 @@ if __name__ == "__main__":
     )
     spark.sparkContext.setLogLevel("WARN")
     query = (
-        parse(read_raw(spark))
-        .writeStream.format("console")
-        .option("numRows", 10)
-        .option("truncate", "false")
-        .option("checkpointLocation", f"{CKPT}/console")
+        read_raw(spark)
+        .writeStream.foreachBatch(process_batch)
+        .option("checkpointLocation", f"{CKPT}/main")
+        .trigger(processingTime="2 seconds")
         .start()
     )
     query.awaitTermination()
