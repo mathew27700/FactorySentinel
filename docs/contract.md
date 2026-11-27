@@ -57,7 +57,8 @@ An event is **rejected** when any of these is true. The reason is the first rule
    are integers, the four sensors are numbers, the rest are strings).
 3. `event_type` is not `reading`.
 4. `machine_id` is not between 1 and 100.
-5. `event_time` or `ingest_time` cannot be parsed, or `event_time` is later than `ingest_time`.
+5. `event_time` or `ingest_time` cannot be parsed, or `event_time` is more than 10 minutes
+   later than `ingest_time`. The 10 minutes allow for clocks that disagree slightly.
 6. A sensor is outside its possible range: `volt` 0 to 500, `rotate` 0 to 1000, `pressure` 0 to
    300, `vibration` 0 to 150.
 7. `source` is not `dataset` or `injected`.
