@@ -38,13 +38,71 @@ services:
     build: ./simulator
     environment:
       KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP}
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:-}
+      KAFKA_TOPIC: sensor.raw
+      SIM_SPEED: ${SIM_SPEED:-3600}
+      SIM_START: ${SIM_START:-2015-07-01}
+      SIM_MAX_HOURS: ${SIM_MAX_HOURS:-0}
+      TELEMETRY_CSV: /app/data/raw/PdM_telemetry.csv
+      FAULT_FILE: /runtime/faults.json
+    volumes:
+      # The dataset is not in git: run scripts/download_data.sh first.
+      - ./data/raw:/app/data/raw:ro
+      # scripts/inject_fault.py writes faults.json here; the simulator reads it.
+      - ./runtime:/runtime
     depends_on:
       kafka:
+        condition: service_healthy
+
+  # The Spark Structured Streaming job. SPARK_MASTER=local[2] runs driver and executors inside
+  # this one container; set it to spark://spark-master:7077 to use the "cluster" profile instead.
+  streaming:
+    build: ./streaming
+    <<: *restart
+    command:
+      - /opt/spark/bin/spark-submit
+      - --master
+      - ${SPARK_MASTER:-local[2]}
+      - --driver-memory
+      - 1g
+      - --packages
+      - org.apache.spark:spark-sql-kafka-0-10_2.13:4.2.0
+      - --conf
+      - spark.jars.ivy=/opt/ivy
+      - /opt/factorysentinel/jobs/job.py
+    environment:
+      KAFKA_BOOTSTRAP: ${KAFKA_BOOTSTRAP}
+      KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-PLAINTEXT}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:-}
+      POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+      POSTGRES_SSLMODE: ${POSTGRES_SSLMODE:-prefer}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Optional second, cloud endpoint for clean events (Fabric Eventstream or Event Hubs).
+      CLOUD_BOOTSTRAP: ${CLOUD_BOOTSTRAP:-}
+      CLOUD_TOPIC: ${CLOUD_TOPIC:-}
+      CLOUD_SECURITY_PROTOCOL: SASL_SSL
+      CLOUD_SASL_PASSWORD: ${CLOUD_SASL_PASSWORD:-}
+      CHECKPOINT_PATH: /data/checkpoints
+      LAKE_PATH: /data/lake
+    ports:
+      - "4040:4040"
+    volumes:
+      - ./streaming/jobs:/opt/factorysentinel/jobs:ro
+      - ./data:/data
+      - ivy-cache:/opt/ivy
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
 
   spark-master:
     image: apache/spark:4.2.0-scala2.13-java17-python3-ubuntu
     <<: *restart
+    profiles: ["cluster"]
     hostname: spark-master
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
     environment:
@@ -58,6 +116,7 @@ services:
   spark-worker:
     image: apache/spark:4.2.0-scala2.13-java17-python3-ubuntu
     <<: *restart
+    profiles: ["cluster"]
     command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
     environment:
       SPARK_NO_DAEMONIZE: "true"
@@ -92,6 +151,7 @@ services:
   airflow:
     image: apache/airflow:3.3.2-python3.11
     <<: *restart
+    profiles: ["batch"]
     command: standalone
     environment:
       # Airflow metadata lives in its own "airflow" database, separate from the project database.
@@ -100,10 +160,13 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/passwords.json
+      # Connection used by the warehouse DAG (conn id: factorysentinel_db).
+      AIRFLOW_CONN_FACTORYSENTINEL_DB: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
     ports:
       - "8081:8080"
     volumes:
       - ./airflow/dags:/opt/airflow/dags
+      - ./warehouse:/opt/airflow/warehouse:ro
       - airflow-logs:/opt/airflow/logs
     configs:
       - source: airflow-passwords
@@ -115,6 +178,7 @@ services:
   prometheus:
     image: prom/prometheus:v3.15.1
     <<: *restart
+    profiles: ["monitoring"]
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
@@ -141,12 +205,12 @@ services:
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     depends_on:
-      - prometheus
       - postgres
 
   kafka-exporter:
     image: danielqsj/kafka-exporter:v1.11.0
     <<: *restart
+    profiles: ["monitoring"]
     command: ["--kafka.server=${KAFKA_BOOTSTRAP}"]
     ports:
       - "9308:9308"
@@ -168,3 +232,4 @@ volumes:
   prometheus-data:
   grafana-data:
   airflow-logs:
+  ivy-cache:
