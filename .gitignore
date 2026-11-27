@@ -29,6 +29,7 @@ Thumbs.db
 
 # FactorySentinel data and runtime state
 data/
+runtime/
 checkpoints/
 spark-warehouse/
 airflow/logs/
