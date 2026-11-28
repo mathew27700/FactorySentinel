@@ -610,7 +610,7 @@
       "gridPos": {
         "x": 0,
         "y": 28,
-        "w": 24,
+        "w": 9,
         "h": 8
       },
       "targets": [
@@ -624,6 +624,42 @@
           "rawQuery": true,
           "editorMode": "code",
           "rawSql": "SELECT rejected_at, reason, left(raw_payload, 60) AS payload\nFROM rejected_events ORDER BY rejected_at DESC LIMIT 15"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Live versus history: machines furthest from their own normal (last finished day)",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "postgres"
+      },
+      "gridPos": {
+        "x": 9,
+        "y": 28,
+        "w": 15,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "postgres"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "rawSql": "SELECT machine_id AS machine, model, age_years AS age, day::date, status, worst_z,\n       avg_volt, volt_z, avg_rotate, rotate_z, avg_pressure, pressure_z, avg_vibration, vibration_z\nFROM v_live_vs_baseline ORDER BY worst_z DESC LIMIT 10"
         }
       ],
       "fieldConfig": {
