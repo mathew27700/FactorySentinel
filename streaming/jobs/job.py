@@ -1,7 +1,7 @@
 """FactorySentinel stream job.
 
 Step A5: Kafka (sensor.raw) -> validate -> Postgres (readings, rejects, alerts, daily windows).
-The lake comes in A6.
+Valid events are also written to the Parquet lake (A6).
 Everything it needs to know about names and rules is in docs/contract.md.
 """
 
@@ -348,7 +348,7 @@ def write_windows(batch, batch_id):
 
 # [start]
 def start_queries(raw):
-    """Two streaming queries so far (the lake query comes in A6), each with its own checkpoint."""
+    """Three streaming queries, each with its own checkpoint folder."""
     valid = parse(raw.filter(reason_udf("raw").isNull()))
 
     main = (
@@ -365,7 +365,17 @@ def start_queries(raw):
         .trigger(processingTime="5 seconds")
         .start()
     )
-    return main, windows
+    lake = (
+        valid.drop("partition", "offset")
+        .withColumn("date", F.to_date("event_ts"))
+        .writeStream.format("parquet")
+        .partitionBy("date")
+        .option("path", f"{LAKE}/readings")
+        .option("checkpointLocation", f"{CKPT}/lake")
+        .trigger(processingTime="1 minute")
+        .start()
+    )
+    return main, windows, lake
 
 
 if __name__ == "__main__":
