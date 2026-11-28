@@ -1,7 +1,7 @@
 """FactorySentinel stream job.
 
-Step A3: Kafka (sensor.raw) -> typed columns -> Postgres live_readings (idempotent upsert).
-Later steps add validation, alerts, windows and the lake.
+Step A4: Kafka (sensor.raw) -> validate -> Postgres live_readings, rejected_events and sensor.dlq.
+Later steps add alerts, windows and the lake.
 Everything it needs to know about names and rules is in docs/contract.md.
 """
 
@@ -12,6 +12,7 @@ from psycopg2.extras import execute_values
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
+from validate import reject_reason
 
 CKPT = os.environ.get("CHECKPOINT_PATH", "/data/checkpoints")
 LAKE = os.environ.get("LAKE_PATH", "/data/lake")
@@ -134,8 +135,43 @@ def write_readings(valid):
 # [/postgres]
 
 
+# [dlq]
+reason_udf = F.udf(reject_reason, T.StringType())
+
+SQL_REJECTED = """
+    INSERT INTO rejected_events (source_partition, source_offset, reason, raw_payload)
+    VALUES %s
+    ON CONFLICT (source_partition, source_offset) DO NOTHING"""
+
+
+def to_kafka(df, topic, prefix="KAFKA"):
+    """Write a batch (one JSON string per row, in a column called value) to a Kafka topic."""
+    df.write.format("kafka").options(**kafka_options(prefix)).option("topic", topic).save()
+
+
+def write_rejected(rejected):
+    rows = rejected.select("partition", "offset", "reason", "raw").collect()
+    if not rows:
+        return
+    upsert(SQL_REJECTED, [tuple(r) for r in rows])
+    message = F.to_json(
+        F.struct("reason", "raw", F.date_format(F.current_timestamp(), ISO).alias("rejected_at"))
+    )
+    to_kafka(rejected.select(message.alias("value")), os.environ.get("TOPIC_DLQ", "sensor.dlq"))
+
+
+# [/dlq]
+
+
 def process_batch(batch, batch_id):
-    write_readings(parse(batch))
+    """Runs once per micro-batch: split good from bad, then write everything."""
+    batch = batch.withColumn("reason", reason_udf("raw")).persist()
+    try:
+        write_rejected(batch.filter("reason IS NOT NULL"))
+        valid = parse(batch.filter("reason IS NULL"))
+        write_readings(valid)
+    finally:
+        batch.unpersist()
 
 
 if __name__ == "__main__":
