@@ -152,7 +152,12 @@ services:
     image: apache/airflow:3.3.2-python3.11
     <<: *restart
     profiles: ["batch"]
-    command: standalone
+    # Airflow 3.3 opens the passwords file for writing (it locks it while the API server
+    # starts), and a mounted config is read-only and owned by root. So start from a copy.
+    command:
+      - bash
+      - -c
+      - install -m 0600 /opt/airflow/passwords.seed.json /opt/airflow/passwords.json && exec airflow standalone
     environment:
       # Airflow metadata lives in its own "airflow" database, separate from the project database.
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
@@ -170,7 +175,7 @@ services:
       - airflow-logs:/opt/airflow/logs
     configs:
       - source: airflow-passwords
-        target: /opt/airflow/passwords.json
+        target: /opt/airflow/passwords.seed.json
     depends_on:
       postgres:
         condition: service_healthy
